@@ -274,6 +274,57 @@
     }
 
     // =========================
+    // Sound (Web Audio API)
+    // =========================
+    let audioCtx = null;
+
+    function getAudioCtx() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      return audioCtx;
+    }
+
+    function playTone(freq, type, duration, gainVal, startDelay = 0) {
+      const ac = getAudioCtx();
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, ac.currentTime + startDelay);
+      gain.gain.setValueAtTime(gainVal, ac.currentTime + startDelay);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + startDelay + duration);
+      osc.start(ac.currentTime + startDelay);
+      osc.stop(ac.currentTime + startDelay + duration + 0.01);
+    }
+
+    function soundFishCollect() {
+      playTone(523.25, "sine", 0.12, 0.35);
+      playTone(659.25, "sine", 0.12, 0.35, 0.1);
+      playTone(783.99, "sine", 0.20, 0.35, 0.2);
+    }
+
+    function soundDogHit() {
+      playTone(220, "sawtooth", 0.15, 0.30);
+      playTone(180, "sawtooth", 0.15, 0.30, 0.12);
+    }
+
+    function soundWin() {
+      playTone(523.25, "sine", 0.10, 0.35);
+      playTone(659.25, "sine", 0.10, 0.35, 0.11);
+      playTone(783.99, "sine", 0.10, 0.35, 0.22);
+      playTone(1046.5, "sine", 0.45, 0.35, 0.33);
+    }
+
+    function soundGameOver() {
+      playTone(392.00, "sine", 0.22, 0.30);
+      playTone(349.23, "sine", 0.22, 0.30, 0.22);
+      playTone(261.63, "sine", 0.45, 0.30, 0.44);
+    }
+
+    // =========================
     // Game state
     // =========================
     const canvas = document.getElementById("game");
@@ -510,15 +561,18 @@
         if (dist2(cat.x, cat.y, f.x, f.y) <= (cat.r + f.r) * (cat.r + f.r)) {
           f.collected = true;
           cat.score += 1;
+          soundFishCollect();
         }
       }
 
-      // dog collisions
       for (const d of dogs) {
         if (dist2(cat.x, cat.y, d.x, d.y) <= (cat.r + d.r) * (cat.r + d.r)) {
           cat.lives -= 1;
           if (cat.lives <= 0) {
             state = "lose";
+            soundGameOver();
+          } else {
+            soundDogHit();
           }
           respawnCat();
           break;
@@ -530,6 +584,7 @@
       const catRect = { x: cat.x - cat.r, y: cat.y - cat.r, w: cat.r*2, h: cat.r*2 };
       if (aabbIntersects(catRect, homeRect)) {
         state = "win";
+        soundWin();
       }
     }
 
@@ -898,6 +953,7 @@
         );
 
         if (mouse.clicked && hovered.start) {
+          getAudioCtx();
           state = "play";
         }
       } else if (state === "win") {
@@ -908,6 +964,7 @@
         );
 
         if (mouse.clicked && hovered.again) {
+          getAudioCtx();
           resetGame();
           state = "play";
         }
@@ -919,6 +976,7 @@
         );
 
         if (mouse.clicked && hovered.again) {
+          getAudioCtx();
           resetGame();
           state = "play";
         }
