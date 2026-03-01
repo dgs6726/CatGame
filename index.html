@@ -249,24 +249,6 @@
         }
       }
 
-      // Add a few extra "buildings" as chunky rectangles to make it feel like a neighborhood.
-      // Keep them from blocking the start/home cells.
-      const extras = 10;
-      for (let i = 0; i < extras; i++) {
-        const bw = randi(50, 120);
-        const bh = randi(40, 110);
-        const bx = randi(0, W - bw);
-        const by = randi(0, H - bh);
-
-        // Avoid bottom-left start zone and top-right home zone.
-        const startZone = { x: 0, y: H - 120, w: 160, h: 120 };
-        const homeZone  = { x: W - 180, y: 0, w: 180, h: 140 };
-        const rect = { x: bx, y: by, w: bw, h: bh };
-        if (aabbIntersects(rect, startZone) || aabbIntersects(rect, homeZone)) continue;
-
-        obstacles.push({ x: bx, y: by, w: bw, h: bh, type: (Math.random() < 0.6 ? "building" : "hedge") });
-      }
-
       // Ensure obstacles are within bounds
       for (const o of obstacles) {
         o.x = clamp(o.x, 0, W - o.w);
