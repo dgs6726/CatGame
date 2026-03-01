@@ -18,8 +18,9 @@
       place-items: center;
     }
     canvas {
-      width: 1120px;
-      height: 800px;
+      /* Scale canvas to fit viewport: min of natural size, viewport width, and viewport-height-constrained width (1120/800 = 1.4 aspect ratio) */
+      width: min(1120px, calc(100vw - 20px), calc((100vh - 60px) * 1.4));
+      aspect-ratio: 1120 / 800;
       image-rendering: pixelated;
       background: #1b1f24;
       border: 2px solid #2a323c;
@@ -27,7 +28,7 @@
       box-shadow: 0 14px 50px rgba(0,0,0,.45);
     }
     .hint {
-      width: 1120px;
+      width: min(1120px, calc(100vw - 20px), calc((100vh - 60px) * 1.4));
       margin-top: 10px;
       font-size: 13px;
       color: #aab6c5;
@@ -358,7 +359,7 @@
     const cat = {
       x: 20,
       y: H - 20,
-      r: 12,
+      r: 8,         // r=8 clears the 10px clamped boundary walls and fits 30px corridors
       speed: 2.5,
       spawnX: 20,
       spawnY: H - 20,
@@ -434,46 +435,17 @@
         fish.push({ x: p.x, y: p.y, r: 8, collected: false });
       }
 
-      // Dogs (2) with patrol paths
+      // Dogs (2)
       dogs = [];
       for (let i = 0; i < 2; i++) {
-        const p = findOpenPoint(14, [startZone, homeZone]);
-        // pick a patrol direction and length
+        const p = findOpenPoint(9, [startZone, homeZone]);
         const horizontal = Math.random() < 0.5;
-        const len = randi(160, 260);
-        const a = { x: p.x, y: p.y };
-        const b = {
-          x: clamp(p.x + (horizontal ? len : 0), 20, W - 20),
-          y: clamp(p.y + (horizontal ? 0 : len), 20, H - 20)
-        };
-
-        // if endpoint collides with obstacles, flip direction / shorten
-        function adjustEndpoint(pt) {
-          let tries = 0;
-          let scale = 1;
-          while (tries < 30) {
-            const test = {
-              x: a.x + (b.x - a.x) * scale,
-              y: a.y + (b.y - a.y) * scale
-            };
-            let blocked = false;
-            for (const o of obstacles) {
-              if (circleAABB(test.x, test.y, 14, o)) { blocked = true; break; }
-            }
-            if (!blocked) return test;
-            scale *= 0.85;
-            tries++;
-          }
-          return { x: a.x, y: a.y };
-        }
-        const bb = adjustEndpoint(b);
-
+        const spd = rand(1.0, 1.6);
+        const sign = Math.random() < 0.5 ? 1 : -1;
         dogs.push({
-          x: a.x, y: a.y, r: 14,
-          a: a, b: bb,
-          t: Math.random(), // 0..1
-          dir: (Math.random() < 0.5 ? 1 : -1),
-          speed: 0.006 + Math.random()*0.003 // param speed along segment
+          x: p.x, y: p.y, r: 9, // r=9 fits through 30px corridors (leaves ~6px clearance each side)
+          vx: horizontal ? spd * sign : 0,
+          vy: horizontal ? 0 : spd * sign
         });
       }
     }
@@ -551,25 +523,14 @@
 
       // dogs patrol
       for (const d of dogs) {
-        d.t += d.dir * d.speed * dt;
-        if (d.t > 1) { d.t = 1; d.dir = -1; }
-        if (d.t < 0) { d.t = 0; d.dir = 1; }
-
-        // lerp
-        const nx = d.a.x + (d.b.x - d.a.x) * d.t;
-        const ny = d.a.y + (d.b.y - d.a.y) * d.t;
-
-        // If dog would be inside wall, bounce direction and step back a bit
-        let blocked = false;
-        for (const o of obstacles) {
-          if (circleAABB(nx, ny, d.r, o)) { blocked = true; break; }
-        }
-        if (blocked) {
-          d.dir *= -1;
-          d.t = clamp(d.t + d.dir * 0.03, 0, 1);
-        } else {
+        const nx = d.x + d.vx * dt;
+        const ny = d.y + d.vy * dt;
+        if (!isBlockedAt(nx, ny, d.r)) {
           d.x = nx;
           d.y = ny;
+        } else {
+          d.vx = -d.vx;
+          d.vy = -d.vy;
         }
       }
 
@@ -743,10 +704,11 @@
       // red circle with small ears
       ctx.save();
       ctx.translate(d.x, d.y);
+      ctx.scale(d.r / 14, d.r / 14); // 14 = original art radius; scales artwork to match collision radius
 
       ctx.fillStyle = "#ff4b4b";
       ctx.beginPath();
-      ctx.arc(0, 0, d.r, 0, Math.PI*2);
+      ctx.arc(0, 0, 14, 0, Math.PI*2);
       ctx.fill();
 
       // ears
@@ -779,6 +741,7 @@
       // orange circle with triangle ears + tail
       ctx.save();
       ctx.translate(cat.x, cat.y);
+      ctx.scale(cat.r / 12, cat.r / 12); // 12 = original art radius; scales artwork to match collision radius
 
       // tail (behind)
       ctx.strokeStyle = "#f39b3b";
@@ -792,7 +755,7 @@
       // body/head
       ctx.fillStyle = "#ffa43a";
       ctx.beginPath();
-      ctx.arc(0, 0, cat.r, 0, Math.PI*2);
+      ctx.arc(0, 0, 12, 0, Math.PI*2);
       ctx.fill();
 
       // ears
@@ -975,14 +938,13 @@
       if (state === "start") {
         const hovered = drawOverlayPanel(
           "Help the cat find its way home!",
-          "Collect all 3 fish, avoid the roaming dogs, and reach the glowing house in the top-right before the timer runs out. The cat moves automatically — use direction keys to steer it.",
+          "Collect all 3 fish, avoid the roaming dogs, and reach the glowing house in the top-right before the timer runs out. Press an arrow key or W/A/S/D to start moving the cat.",
           [{ label: "Start", id: "start" }]
         );
 
         if ((mouse.clicked && hovered.start) || keys.has("enter") || keys.has(" ")) {
           getAudioCtx();
           state = "play";
-          cat.currentDir = { x: 1, y: 0 };
           keys.clear();
         }
       } else if (state === "win") {
@@ -996,7 +958,6 @@
           getAudioCtx();
           resetGame();
           state = "play";
-          cat.currentDir = { x: 1, y: 0 };
           keys.clear();
         }
       } else if (state === "lose") {
@@ -1010,7 +971,6 @@
           getAudioCtx();
           resetGame();
           state = "play";
-          cat.currentDir = { x: 1, y: 0 };
           keys.clear();
         }
       }
