@@ -1,0 +1,939 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cat Finds Home (Single-File Canvas Game)</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #121417;
+      color: #e8eef6;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    .wrap {
+      height: 100%;
+      display: grid;
+      place-items: center;
+    }
+    canvas {
+      width: 800px;
+      height: 600px;
+      image-rendering: pixelated;
+      background: #1b1f24;
+      border: 2px solid #2a323c;
+      border-radius: 10px;
+      box-shadow: 0 14px 50px rgba(0,0,0,.45);
+    }
+    .hint {
+      width: 800px;
+      margin-top: 10px;
+      font-size: 13px;
+      color: #aab6c5;
+      line-height: 1.35;
+      text-align: left;
+    }
+    .hint kbd {
+      font: inherit;
+      background: #222a33;
+      border: 1px solid #313b47;
+      border-bottom-width: 2px;
+      padding: 1px 6px;
+      border-radius: 6px;
+      color: #e8eef6;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <canvas id="game" width="800" height="600" aria-label="Cat maze game"></canvas>
+      <div class="hint">
+        Controls: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or Arrow Keys. Collect 3 fish, avoid dogs, reach home (top-right).
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (() => {
+    "use strict";
+
+    // =========================
+    // Constants / Helpers
+    // =========================
+    const W = 800, H = 600;
+
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const randi = (a, b) => (a + Math.floor(Math.random() * (b - a + 1)));
+    const dist2 = (ax, ay, bx, by) => {
+      const dx = ax - bx, dy = ay - by;
+      return dx*dx + dy*dy;
+    };
+
+    function aabbIntersects(a, b) {
+      return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      );
+    }
+
+    // Circle vs AABB collision for dogs/cat vs walls
+    function circleAABB(cx, cy, cr, rect) {
+      const closestX = clamp(cx, rect.x, rect.x + rect.w);
+      const closestY = clamp(cy, rect.y, rect.y + rect.h);
+      const dx = cx - closestX;
+      const dy = cy - closestY;
+      return (dx*dx + dy*dy) <= cr*cr;
+    }
+
+    // =========================
+    // Maze generation (grid -> walls)
+    // =========================
+    // We generate a perfect maze on a grid, then convert walls into chunky rectangles (buildings/hedges).
+    const cellSize = 40;
+    const cols = Math.floor(W / cellSize); // 20
+    const rows = Math.floor(H / cellSize); // 15
+
+    function makeMaze() {
+      // Each cell has walls: top,right,bottom,left
+      const grid = [];
+      for (let y = 0; y < rows; y++) {
+        const row = [];
+        for (let x = 0; x < cols; x++) {
+          row.push({ x, y, v:false, w:[true,true,true,true] });
+        }
+        grid.push(row);
+      }
+
+      const stack = [];
+      const start = grid[rows - 1][0]; // bottom-left
+      start.v = true;
+      stack.push(start);
+
+      function neighbors(c) {
+        const out = [];
+        const {x,y} = c;
+        if (y > 0) out.push({ dir:0, c:grid[y-1][x] });      // top
+        if (x < cols-1) out.push({ dir:1, c:grid[y][x+1] }); // right
+        if (y < rows-1) out.push({ dir:2, c:grid[y+1][x] }); // bottom
+        if (x > 0) out.push({ dir:3, c:grid[y][x-1] });      // left
+        return out.filter(n => !n.c.v);
+      }
+
+      while (stack.length) {
+        const cur = stack[stack.length - 1];
+        const nbs = neighbors(cur);
+        if (!nbs.length) {
+          stack.pop();
+          continue;
+        }
+        const pick = nbs[(Math.random() * nbs.length) | 0];
+        const nxt = pick.c;
+        // Remove wall between cur and nxt
+        cur.w[pick.dir] = false;
+        nxt.w[(pick.dir + 2) % 4] = false;
+        nxt.v = true;
+        stack.push(nxt);
+      }
+
+      return grid;
+    }
+
+    function buildObstaclesFromMaze(grid) {
+      // Convert walls into rectangles, merge collinear segments to reduce counts.
+      // We'll create both "building" walls (thicker) and "hedge" walls (slightly thinner),
+      // randomly assigning type per segment.
+      const obstacles = [];
+
+      // wall thickness
+      const tBuilding = 10;
+      const tHedge = 8;
+
+      function pushRect(x, y, w, h, type) {
+        // Keep inside bounds and avoid degenerate
+        w = Math.max(1, w);
+        h = Math.max(1, h);
+        obstacles.push({ x, y, w, h, type }); // type: 'building'|'hedge'
+      }
+
+      // Horizontal walls: top edges of cells + bottom boundary
+      for (let y = 0; y < rows; y++) {
+        let x = 0;
+        while (x < cols) {
+          // A horizontal wall exists at top of cell if grid[y][x].w[0] is true.
+          if (!grid[y][x].w[0]) { x++; continue; }
+
+          // Merge consecutive top walls
+          let x2 = x;
+          while (x2 < cols && grid[y][x2].w[0]) x2++;
+          const type = Math.random() < 0.55 ? "building" : "hedge";
+          const th = (type === "building") ? tBuilding : tHedge;
+
+          const px = x * cellSize;
+          const py = y * cellSize - Math.floor(th / 2);
+          const pw = (x2 - x) * cellSize;
+          const ph = th;
+
+          // Slight inset so they don't hang too far outside; clamp to canvas
+          pushRect(clamp(px, 0, W), clamp(py, 0, H), clamp(pw, 1, W), clamp(ph, 1, H), type);
+          x = x2;
+        }
+      }
+
+      // Bottom boundary walls (for cells in last row)
+      {
+        let x = 0;
+        const y = rows - 1;
+        while (x < cols) {
+          if (!grid[y][x].w[2]) { x++; continue; }
+          let x2 = x;
+          while (x2 < cols && grid[y][x2].w[2]) x2++;
+          const type = Math.random() < 0.55 ? "building" : "hedge";
+          const th = (type === "building") ? tBuilding : tHedge;
+
+          const px = x * cellSize;
+          const py = (y + 1) * cellSize - Math.floor(th / 2);
+          const pw = (x2 - x) * cellSize;
+          const ph = th;
+
+          pushRect(clamp(px, 0, W), clamp(py, 0, H), clamp(pw, 1, W), clamp(ph, 1, H), type);
+          x = x2;
+        }
+      }
+
+      // Vertical walls: left edges + right boundary
+      for (let x = 0; x < cols; x++) {
+        let y = 0;
+        while (y < rows) {
+          if (!grid[y][x].w[3]) { y++; continue; }
+          let y2 = y;
+          while (y2 < rows && grid[y2][x].w[3]) y2++;
+          const type = Math.random() < 0.55 ? "building" : "hedge";
+          const th = (type === "building") ? tBuilding : tHedge;
+
+          const px = x * cellSize - Math.floor(th / 2);
+          const py = y * cellSize;
+          const pw = th;
+          const ph = (y2 - y) * cellSize;
+
+          pushRect(clamp(px, 0, W), clamp(py, 0, H), clamp(pw, 1, W), clamp(ph, 1, H), type);
+          y = y2;
+        }
+      }
+
+      // Right boundary walls for last col
+      {
+        let y = 0;
+        const x = cols - 1;
+        while (y < rows) {
+          if (!grid[y][x].w[1]) { y++; continue; }
+          let y2 = y;
+          while (y2 < rows && grid[y2][x].w[1]) y2++;
+          const type = Math.random() < 0.55 ? "building" : "hedge";
+          const th = (type === "building") ? tBuilding : tHedge;
+
+          const px = (x + 1) * cellSize - Math.floor(th / 2);
+          const py = y * cellSize;
+          const pw = th;
+          const ph = (y2 - y) * cellSize;
+
+          pushRect(clamp(px, 0, W), clamp(py, 0, H), clamp(pw, 1, W), clamp(ph, 1, H), type);
+          y = y2;
+        }
+      }
+
+      // Add a few extra "buildings" as chunky rectangles to make it feel like a neighborhood.
+      // Keep them from blocking the start/home cells.
+      const extras = 10;
+      for (let i = 0; i < extras; i++) {
+        const bw = randi(50, 120);
+        const bh = randi(40, 110);
+        const bx = randi(0, W - bw);
+        const by = randi(0, H - bh);
+
+        // Avoid bottom-left start zone and top-right home zone.
+        const startZone = { x: 0, y: H - 120, w: 160, h: 120 };
+        const homeZone  = { x: W - 180, y: 0, w: 180, h: 140 };
+        const rect = { x: bx, y: by, w: bw, h: bh };
+        if (aabbIntersects(rect, startZone) || aabbIntersects(rect, homeZone)) continue;
+
+        obstacles.push({ x: bx, y: by, w: bw, h: bh, type: (Math.random() < 0.6 ? "building" : "hedge") });
+      }
+
+      // Ensure obstacles are within bounds
+      for (const o of obstacles) {
+        o.x = clamp(o.x, 0, W - o.w);
+        o.y = clamp(o.y, 0, H - o.h);
+      }
+
+      return obstacles;
+    }
+
+    // =========================
+    // Game state
+    // =========================
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const keys = new Set();
+    window.addEventListener("keydown", (e) => {
+      const k = e.key.toLowerCase();
+      if (["arrowup","arrowdown","arrowleft","arrowright","w","a","s","d"," "].includes(k)) {
+        e.preventDefault();
+      }
+      keys.add(k);
+    }, { passive: false });
+
+    window.addEventListener("keyup", (e) => {
+      keys.delete(e.key.toLowerCase());
+    });
+
+    let state = "start"; // start | play | win | lose
+
+    // Entities
+    const cat = {
+      x: 30,
+      y: H - 30,
+      r: 12,
+      speed: 3,
+      spawnX: 30,
+      spawnY: H - 30,
+      lives: 3,
+      score: 0
+    };
+
+    const home = {
+      x: W - 70,
+      y: 50,
+      w: 46,
+      h: 38
+    };
+
+    let obstacles = [];
+    let fish = [];
+    let dogs = [];
+    let grid = null;
+
+    function resetGame() {
+      // regenerate everything
+      state = "start";
+
+      cat.x = 30;
+      cat.y = H - 30;
+      cat.spawnX = 30;
+      cat.spawnY = H - 30;
+      cat.lives = 3;
+      cat.score = 0;
+
+      grid = makeMaze();
+      obstacles = buildObstaclesFromMaze(grid);
+
+      // Create safe zones (no fish/dogs inside)
+      const startZone = { x: 0, y: H - 130, w: 180, h: 130 };
+      const homeZone  = { x: W - 220, y: 0, w: 220, h: 160 };
+
+      // Helper to find random open position not colliding with obstacles
+      function findOpenPoint(radius, avoidRects=[]) {
+        for (let tries = 0; tries < 2000; tries++) {
+          const x = rand(radius + 5, W - radius - 5);
+          const y = rand(radius + 5, H - radius - 5);
+
+          // avoid zones
+          let bad = false;
+          for (const z of avoidRects) {
+            if (circleAABB(x, y, radius, z)) { bad = true; break; }
+          }
+          if (bad) continue;
+
+          // avoid obstacles
+          for (const o of obstacles) {
+            if (circleAABB(x, y, radius, o)) { bad = true; break; }
+          }
+          if (bad) continue;
+
+          return { x, y };
+        }
+        // fallback
+        return { x: W/2, y: H/2 };
+      }
+
+      // Fish (3)
+      fish = [];
+      for (let i = 0; i < 3; i++) {
+        const p = findOpenPoint(10, [startZone, homeZone]);
+        fish.push({ x: p.x, y: p.y, r: 8, collected: false });
+      }
+
+      // Dogs (2) with patrol paths
+      dogs = [];
+      for (let i = 0; i < 2; i++) {
+        const p = findOpenPoint(14, [startZone, homeZone]);
+        // pick a patrol direction and length
+        const horizontal = Math.random() < 0.5;
+        const len = randi(160, 260);
+        const a = { x: p.x, y: p.y };
+        const b = {
+          x: clamp(p.x + (horizontal ? len : 0), 20, W - 20),
+          y: clamp(p.y + (horizontal ? 0 : len), 20, H - 20)
+        };
+
+        // if endpoint collides with obstacles, flip direction / shorten
+        function adjustEndpoint(pt) {
+          let tries = 0;
+          let scale = 1;
+          while (tries < 30) {
+            const test = {
+              x: a.x + (b.x - a.x) * scale,
+              y: a.y + (b.y - a.y) * scale
+            };
+            let blocked = false;
+            for (const o of obstacles) {
+              if (circleAABB(test.x, test.y, 14, o)) { blocked = true; break; }
+            }
+            if (!blocked) return test;
+            scale *= 0.85;
+            tries++;
+          }
+          return { x: a.x, y: a.y };
+        }
+        const bb = adjustEndpoint(b);
+
+        dogs.push({
+          x: a.x, y: a.y, r: 14,
+          a: a, b: bb,
+          t: Math.random(), // 0..1
+          dir: (Math.random() < 0.5 ? 1 : -1),
+          speed: 0.006 + Math.random()*0.003 // param speed along segment
+        });
+      }
+    }
+
+    resetGame();
+
+    // =========================
+    // Input & Movement
+    // =========================
+    function catDesiredVelocity() {
+      let vx = 0, vy = 0;
+
+      const up = keys.has("arrowup") || keys.has("w");
+      const down = keys.has("arrowdown") || keys.has("s");
+      const left = keys.has("arrowleft") || keys.has("a");
+      const right = keys.has("arrowright") || keys.has("d");
+
+      if (up) vy -= 1;
+      if (down) vy += 1;
+      if (left) vx -= 1;
+      if (right) vx += 1;
+
+      // normalize diagonal
+      if (vx !== 0 && vy !== 0) {
+        const inv = 1 / Math.sqrt(2);
+        vx *= inv;
+        vy *= inv;
+      }
+
+      return { vx: vx * cat.speed, vy: vy * cat.speed };
+    }
+
+    function moveCatWithCollisions(vx, vy) {
+      // move X then resolve
+      cat.x += vx;
+      // Keep in bounds
+      cat.x = clamp(cat.x, cat.r, W - cat.r);
+
+      // resolve against obstacles
+      for (const o of obstacles) {
+        if (circleAABB(cat.x, cat.y, cat.r, o)) {
+          // push out along x based on which side we came from
+          if (vx > 0) cat.x = o.x - cat.r;
+          else if (vx < 0) cat.x = o.x + o.w + cat.r;
+        }
+      }
+
+      // move Y then resolve
+      cat.y += vy;
+      cat.y = clamp(cat.y, cat.r, H - cat.r);
+
+      for (const o of obstacles) {
+        if (circleAABB(cat.x, cat.y, cat.r, o)) {
+          if (vy > 0) cat.y = o.y - cat.r;
+          else if (vy < 0) cat.y = o.y + o.h + cat.r;
+        }
+      }
+    }
+
+    function respawnCat() {
+      cat.x = cat.spawnX;
+      cat.y = cat.spawnY;
+    }
+
+    // =========================
+    // Update logic
+    // =========================
+    function updatePlay() {
+      // move cat
+      const {vx, vy} = catDesiredVelocity();
+      moveCatWithCollisions(vx, vy);
+
+      // dogs patrol
+      for (const d of dogs) {
+        d.t += d.dir * d.speed;
+        if (d.t > 1) { d.t = 1; d.dir = -1; }
+        if (d.t < 0) { d.t = 0; d.dir = 1; }
+
+        // lerp
+        const nx = d.a.x + (d.b.x - d.a.x) * d.t;
+        const ny = d.a.y + (d.b.y - d.a.y) * d.t;
+
+        // If dog would be inside wall, bounce direction and step back a bit
+        let blocked = false;
+        for (const o of obstacles) {
+          if (circleAABB(nx, ny, d.r, o)) { blocked = true; break; }
+        }
+        if (blocked) {
+          d.dir *= -1;
+          d.t = clamp(d.t + d.dir * 0.03, 0, 1);
+        } else {
+          d.x = nx;
+          d.y = ny;
+        }
+      }
+
+      // collect fish
+      for (const f of fish) {
+        if (f.collected) continue;
+        if (dist2(cat.x, cat.y, f.x, f.y) <= (cat.r + f.r) * (cat.r + f.r)) {
+          f.collected = true;
+          cat.score += 1;
+        }
+      }
+
+      // dog collisions
+      for (const d of dogs) {
+        if (dist2(cat.x, cat.y, d.x, d.y) <= (cat.r + d.r) * (cat.r + d.r)) {
+          cat.lives -= 1;
+          if (cat.lives <= 0) {
+            state = "lose";
+          }
+          respawnCat();
+          break;
+        }
+      }
+
+      // win condition: reach home area (top-right)
+      const homeRect = { x: home.x - home.w/2, y: home.y - home.h/2, w: home.w, h: home.h };
+      const catRect = { x: cat.x - cat.r, y: cat.y - cat.r, w: cat.r*2, h: cat.r*2 };
+      if (aabbIntersects(catRect, homeRect)) {
+        state = "win";
+      }
+    }
+
+    // =========================
+    // Drawing
+    // =========================
+    function drawBackground() {
+      // subtle grid / street texture
+      ctx.fillStyle = "#171b20";
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.strokeStyle = "#2b333d";
+      ctx.lineWidth = 1;
+
+      for (let x = 0; x <= W; x += 40) {
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, H);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= H; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(W, y + 0.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawObstacles() {
+      for (const o of obstacles) {
+        if (o.type === "building") {
+          ctx.fillStyle = "#7a848f"; // gray buildings
+          ctx.fillRect(o.x, o.y, o.w, o.h);
+          // small highlight
+          ctx.globalAlpha = 0.15;
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(o.x + 2, o.y + 2, Math.max(0, o.w - 4), 3);
+          ctx.globalAlpha = 1;
+        } else {
+          ctx.fillStyle = "#2e7d3a"; // green hedges
+          ctx.fillRect(o.x, o.y, o.w, o.h);
+          // leaf speckles
+          ctx.save();
+          ctx.globalAlpha = 0.18;
+          ctx.fillStyle = "#b7f5c0";
+          for (let i = 0; i < 6; i++) {
+            const px = o.x + rand(2, Math.max(3, o.w - 3));
+            const py = o.y + rand(2, Math.max(3, o.h - 3));
+            ctx.fillRect(px, py, 2, 2);
+          }
+          ctx.restore();
+        }
+      }
+    }
+
+    function drawHome() {
+      // Glow marker behind home
+      const gx = home.x;
+      const gy = home.y;
+      const grad = ctx.createRadialGradient(gx, gy, 5, gx, gy, 55);
+      grad.addColorStop(0, "rgba(255, 228, 120, 0.65)");
+      grad.addColorStop(1, "rgba(255, 228, 120, 0.0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(gx, gy, 55, 0, Math.PI * 2);
+      ctx.fill();
+
+      // house body
+      const hw = home.w, hh = home.h;
+      const x = home.x - hw/2;
+      const y = home.y - hh/2;
+      ctx.fillStyle = "#d9d2c3";
+      ctx.fillRect(x, y + 12, hw, hh - 12);
+
+      // roof
+      ctx.fillStyle = "#b46a4d";
+      ctx.beginPath();
+      ctx.moveTo(x - 4, y + 14);
+      ctx.lineTo(x + hw/2, y - 6);
+      ctx.lineTo(x + hw + 4, y + 14);
+      ctx.closePath();
+      ctx.fill();
+
+      // door
+      ctx.fillStyle = "#6b4a3a";
+      ctx.fillRect(x + hw/2 - 6, y + hh - 16, 12, 16);
+
+      // flag
+      ctx.strokeStyle = "#fff3b0";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + hw + 10, y + 2);
+      ctx.lineTo(x + hw + 10, y + 26);
+      ctx.stroke();
+      ctx.fillStyle = "#ffd166";
+      ctx.beginPath();
+      ctx.moveTo(x + hw + 10, y + 4);
+      ctx.lineTo(x + hw + 28, y + 10);
+      ctx.lineTo(x + hw + 10, y + 16);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawFish() {
+      for (const f of fish) {
+        if (f.collected) continue;
+        // simple blue fish shape
+        ctx.save();
+        ctx.translate(f.x, f.y);
+
+        ctx.fillStyle = "#4ea3ff";
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 10, 6, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // tail
+        ctx.beginPath();
+        ctx.moveTo(-10, 0);
+        ctx.lineTo(-18, -6);
+        ctx.lineTo(-18, 6);
+        ctx.closePath();
+        ctx.fill();
+
+        // eye
+        ctx.fillStyle = "#0b2545";
+        ctx.beginPath();
+        ctx.arc(4, -1, 1.5, 0, Math.PI*2);
+        ctx.fill();
+
+        ctx.restore();
+      }
+    }
+
+    function drawDog(d) {
+      // red circle with small ears
+      ctx.save();
+      ctx.translate(d.x, d.y);
+
+      ctx.fillStyle = "#ff4b4b";
+      ctx.beginPath();
+      ctx.arc(0, 0, d.r, 0, Math.PI*2);
+      ctx.fill();
+
+      // ears
+      ctx.fillStyle = "#d63434";
+      ctx.beginPath();
+      ctx.moveTo(-7, -8);
+      ctx.lineTo(-2, -16);
+      ctx.lineTo(2, -8);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(7, -8);
+      ctx.lineTo(2, -16);
+      ctx.lineTo(-2, -8);
+      ctx.closePath();
+      ctx.fill();
+
+      // eyes
+      ctx.fillStyle = "#1b1b1b";
+      ctx.beginPath();
+      ctx.arc(-4, -2, 2, 0, Math.PI*2);
+      ctx.arc(4, -2, 2, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawCat() {
+      // orange circle with triangle ears + tail
+      ctx.save();
+      ctx.translate(cat.x, cat.y);
+
+      // tail (behind)
+      ctx.strokeStyle = "#f39b3b";
+      ctx.lineWidth = 6;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(-10, 8);
+      ctx.quadraticCurveTo(-28, 14, -22, 28);
+      ctx.stroke();
+
+      // body/head
+      ctx.fillStyle = "#ffa43a";
+      ctx.beginPath();
+      ctx.arc(0, 0, cat.r, 0, Math.PI*2);
+      ctx.fill();
+
+      // ears
+      ctx.fillStyle = "#ff8f2b";
+      ctx.beginPath();
+      ctx.moveTo(-8, -6);
+      ctx.lineTo(-2, -18);
+      ctx.lineTo(2, -6);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(8, -6);
+      ctx.lineTo(2, -18);
+      ctx.lineTo(-2, -6);
+      ctx.closePath();
+      ctx.fill();
+
+      // face
+      ctx.fillStyle = "#2b1d12";
+      ctx.beginPath();
+      ctx.arc(-4, -1, 2, 0, Math.PI*2);
+      ctx.arc(4, -1, 2, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.fillStyle = "#2b1d12";
+      ctx.beginPath();
+      ctx.arc(0, 4, 1.7, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawHUD() {
+      // top-left lives + score
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(10, 10, 170, 54);
+
+      ctx.fillStyle = "#e8eef6";
+      ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      ctx.textBaseline = "top";
+      ctx.fillText(`Lives: ${cat.lives}`, 20, 18);
+      ctx.fillText(`Score: ${cat.score}/3`, 20, 36);
+      ctx.restore();
+    }
+
+    function drawButton(x, y, w, h, text) {
+      // button with hover effect
+      const mx = mouse.x, my = mouse.y;
+      const hover = mx >= x && mx <= x+w && my >= y && my <= y+h;
+
+      ctx.save();
+      ctx.fillStyle = hover ? "#2b8cff" : "#1f6feb";
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      ctx.strokeRect(x+0.5, y+0.5, w-1, h-1);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "18px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillText(text, x + w/2, y + h/2);
+      ctx.restore();
+
+      return hover;
+    }
+
+    function drawOverlayPanel(title, subtitle, buttons) {
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(0, 0, W, H);
+
+      // panel
+      const pw = 520, ph = 260;
+      const px = (W - pw)/2, py = (H - ph)/2;
+      ctx.fillStyle = "rgba(19,24,30,0.95)";
+      ctx.fillRect(px, py, pw, ph);
+      ctx.strokeStyle = "rgba(255,255,255,0.12)";
+      ctx.strokeRect(px+0.5, py+0.5, pw-1, ph-1);
+
+      ctx.fillStyle = "#e8eef6";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.font = "28px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      ctx.fillText(title, W/2, py + 26);
+
+      ctx.fillStyle = "#aab6c5";
+      ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      wrapText(subtitle, W/2, py + 74, pw - 70, 22);
+
+      // buttons: [{label, id}]
+      const btnW = 160, btnH = 44;
+      const gap = 18;
+      const totalW = buttons.length * btnW + (buttons.length - 1) * gap;
+      let bx = W/2 - totalW/2;
+      const by = py + ph - 70;
+
+      const hovered = {};
+      for (const b of buttons) {
+        const isHover = drawButton(bx, by, btnW, btnH, b.label);
+        hovered[b.id] = isHover;
+        bx += btnW + gap;
+      }
+
+      ctx.restore();
+      return hovered;
+    }
+
+    function wrapText(text, cx, y, maxWidth, lineHeight) {
+      const words = text.split(/\s+/);
+      let line = "";
+      let yy = y;
+
+      ctx.textAlign = "center";
+      for (let i = 0; i < words.length; i++) {
+        const test = line ? line + " " + words[i] : words[i];
+        const w = ctx.measureText(test).width;
+        if (w > maxWidth && line) {
+          ctx.fillText(line, cx, yy);
+          line = words[i];
+          yy += lineHeight;
+        } else {
+          line = test;
+        }
+      }
+      if (line) ctx.fillText(line, cx, yy);
+    }
+
+    // =========================
+    // Mouse for UI buttons
+    // =========================
+    const mouse = { x: -1, y: -1, down: false, clicked: false };
+
+    canvas.addEventListener("mousemove", (e) => {
+      const r = canvas.getBoundingClientRect();
+      mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
+      mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+      mouse.x = -1; mouse.y = -1;
+    });
+
+    canvas.addEventListener("mousedown", (e) => {
+      mouse.down = true;
+    });
+
+    window.addEventListener("mouseup", (e) => {
+      if (mouse.down) mouse.clicked = true;
+      mouse.down = false;
+    });
+
+    // =========================
+    // Main loop
+    // =========================
+    function tick() {
+      // update
+      if (state === "play") updatePlay();
+
+      // draw
+      drawBackground();
+      drawObstacles();
+      drawHome();
+      drawFish();
+      for (const d of dogs) drawDog(d);
+      drawCat();
+      if (state !== "start") drawHUD();
+
+      // overlays
+      if (state === "start") {
+        const hovered = drawOverlayPanel(
+          "Help the cat find its way home!",
+          "Collect all 3 fish for a higher score, avoid the roaming dogs, and make it to the glowing house in the top-right.",
+          [{ label: "Start", id: "start" }]
+        );
+
+        if (mouse.clicked && hovered.start) {
+          state = "play";
+        }
+      } else if (state === "win") {
+        const hovered = drawOverlayPanel(
+          "Welcome Home!",
+          `Final score: ${cat.score}/3. (Tip: you can replay for a new neighborhood layout.)`,
+          [{ label: "Play Again", id: "again" }]
+        );
+
+        if (mouse.clicked && hovered.again) {
+          resetGame();
+          state = "play";
+        }
+      } else if (state === "lose") {
+        const hovered = drawOverlayPanel(
+          "Game Over",
+          `You ran out of lives. Final score: ${cat.score}/3.`,
+          [{ label: "Try Again", id: "again" }]
+        );
+
+        if (mouse.clicked && hovered.again) {
+          resetGame();
+          state = "play";
+        }
+      }
+
+      // consume click
+      mouse.clicked = false;
+
+      requestAnimationFrame(tick);
+    }
+
+    // Start loop
+    requestAnimationFrame(tick);
+
+  })();
+  </script>
+</body>
+</html>
