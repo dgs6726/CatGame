@@ -680,6 +680,246 @@
       }
     }
     // CHUNK4_INSERT
+
+    // === SOUND (Web Audio API) ===
+    let audioCtx = null;
+    function getAudioCtx() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      return audioCtx;
+    }
+    function playTone(freq, type, duration, gainVal, startDelay) {
+      startDelay = startDelay || 0;
+      try {
+        const ac = getAudioCtx();
+        const osc = ac.createOscillator(), gain = ac.createGain();
+        osc.connect(gain); gain.connect(ac.destination);
+        osc.type = type; osc.frequency.setValueAtTime(freq, ac.currentTime + startDelay);
+        gain.gain.setValueAtTime(gainVal, ac.currentTime + startDelay);
+        gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + startDelay + duration);
+        osc.start(ac.currentTime + startDelay); osc.stop(ac.currentTime + startDelay + duration + 0.01);
+      } catch(e) {}
+    }
+    let lastShotTime = 0;
+    function soundTowerShoot() {
+      const now = performance.now(); if (now - lastShotTime < 80) return; lastShotTime = now;
+      playTone(600, "square", 0.04, 0.12);
+    }
+    function soundEnemyDeath() { playTone(440, "square", 0.06, 0.18); playTone(520, "square", 0.06, 0.12, 0.04); }
+    function soundBossDeath() { playTone(200, "sawtooth", 0.3, 0.25); playTone(300, "sine", 0.35, 0.25, 0.2); }
+    function soundLifeLost() { playTone(350, "square", 0.15, 0.25); playTone(280, "square", 0.2, 0.25, 0.12); }
+    function soundWaveStart() { playTone(330, "sine", 0.1, 0.2); playTone(440, "sine", 0.1, 0.2, 0.1); playTone(550, "sine", 0.15, 0.2, 0.2); }
+    function soundWaveSpawn() {}
+    function soundUpgrade() { playTone(600, "sine", 0.08, 0.18); playTone(800, "sine", 0.08, 0.18, 0.08); playTone(1000, "sine", 0.15, 0.18, 0.16); }
+    function soundVictory() { playTone(523, "sine", 0.1, 0.3); playTone(659, "sine", 0.1, 0.3, 0.11); playTone(784, "sine", 0.1, 0.3, 0.22); playTone(1047, "sine", 0.45, 0.3, 0.33); }
+    function soundGameOver() { playTone(392, "sine", 0.22, 0.25); playTone(349, "sine", 0.22, 0.25, 0.22); playTone(262, "sine", 0.45, 0.25, 0.44); }
+    function soundPlace() { playTone(330, "sine", 0.08, 0.2); playTone(440, "sine", 0.08, 0.2, 0.06); }
+    function soundSell() { playTone(1000, "sine", 0.05, 0.15); playTone(1200, "sine", 0.05, 0.1, 0.06); }
+
+    // === HUD (top bar) ===
+    function drawHUD() {
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(0, 0, W, 32);
+      ctx.fillStyle = "#e8eef6"; ctx.font = "bold 14px system-ui"; ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+      // wave
+      ctx.fillText("Wave: " + G.wave + "/20", 14, 16);
+      // lives
+      ctx.fillStyle = G.lives <= 5 ? "#ff5555" : "#e8eef6";
+      ctx.fillText("\u2665 " + G.lives, 160, 16);
+      // currency
+      ctx.fillStyle = "#4ea3ff";
+      ctx.fillText("\uD83D\uDC1F " + G.currency, 240, 16);
+      // enemies remaining during active
+      if (G.waveState === "active") {
+        ctx.fillStyle = "#aab6c5"; ctx.textAlign = "right";
+        ctx.fillText("Enemies: " + G.enemies.filter(e=>e.alive).length + " + " + G.spawnQueue.length + " queued", W - 14, 16);
+      }
+      ctx.restore();
+    }
+
+    // === UI PANEL (bottom) ===
+    function drawUIPanel() {
+      // background
+      ctx.fillStyle = "#1a1e24";
+      ctx.fillRect(0, UI_Y, W, UI_H);
+      ctx.strokeStyle = "#2a323c"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, UI_Y+0.5); ctx.lineTo(W, UI_Y+0.5); ctx.stroke();
+
+      // tower slots (left side, 6 slots)
+      const slotW = 95, slotH = 90, slotGap = 8, startX = 14, startY = UI_Y + 15;
+      for (let i = 0; i < TKEYS.length; i++) {
+        const key = TKEYS[i];
+        const def = TDEFS[key];
+        const sx = startX + i * (slotW + slotGap), sy = startY;
+        const unlocked = G.unlocked.includes(key);
+        const affordable = G.currency >= def.cost;
+        const selected = G.selType === key;
+        const hovered = mouse.x >= sx && mouse.x <= sx+slotW && mouse.y >= sy && mouse.y <= sy+slotH;
+
+        // slot bg
+        ctx.fillStyle = selected ? "#2b4a6b" : hovered && unlocked ? "#242a33" : "#1e2229";
+        ctx.fillRect(sx, sy, slotW, slotH);
+        ctx.strokeStyle = selected ? "#4ea3ff" : "#2a323c";
+        ctx.lineWidth = selected ? 2 : 1;
+        ctx.strokeRect(sx+0.5, sy+0.5, slotW-1, slotH-1);
+
+        if (unlocked) {
+          // mini cat icon
+          ctx.save(); ctx.globalAlpha = affordable ? 1 : 0.4;
+          drawCatTower(sx + slotW/2, sy + 30, def.color, 0, 0.55);
+          ctx.restore();
+          // name
+          ctx.fillStyle = affordable ? "#e8eef6" : "#667";
+          ctx.font = "11px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+          ctx.fillText(def.name, sx + slotW/2, sy + 52);
+          // cost
+          ctx.fillStyle = affordable ? "#4ea3ff" : "#994444";
+          ctx.font = "bold 12px system-ui";
+          ctx.fillText(def.cost + " \uD83D\uDC1F", sx + slotW/2, sy + 68);
+          // hotkey
+          ctx.fillStyle = "#556"; ctx.font = "10px system-ui"; ctx.textAlign = "right"; ctx.textBaseline = "top";
+          ctx.fillText(""+(i+1), sx + slotW - 4, sy + 3);
+        } else {
+          // locked
+          ctx.save(); ctx.globalAlpha = 0.4;
+          ctx.fillStyle = "#556"; ctx.font = "bold 20px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.fillText("\uD83D\uDD12", sx + slotW/2, sy + 30);
+          ctx.font = "11px system-ui"; ctx.textBaseline = "top";
+          ctx.fillText("Wave " + TUNLOCK[key], sx + slotW/2, sy + 52);
+          ctx.restore();
+        }
+      }
+
+      // right side: wave info + button
+      const rx = 620, ry = UI_Y + 15;
+      ctx.fillStyle = "#e8eef6"; ctx.font = "bold 16px system-ui"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+      ctx.fillText("Wave " + G.wave + " / 20", rx + 50, ry + 5);
+      ctx.fillStyle = "#aab6c5"; ctx.font = "13px system-ui";
+      ctx.fillText("Lives: " + G.lives + "   Fish: " + G.currency, rx + 50, ry + 28);
+
+      // Send Wave button (only during prep)
+      if (G.waveState === "prep") {
+        const bx = rx + 50, by = ry + 52, bw = 140, bh = 36;
+        const bHover = mouse.x >= bx && mouse.x <= bx+bw && mouse.y >= by && mouse.y <= by+bh;
+        ctx.fillStyle = bHover ? "#2b8cff" : "#1f6feb";
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.strokeRect(bx+0.5,by+0.5,bw-1,bh-1);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 14px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("Send Wave \u25B6", bx+bw/2, by+bh/2);
+        btnSendWave = { x: bx, y: by, w: bw, h: bh };
+      } else {
+        btnSendWave = null;
+      }
+
+      // tower slots for click detection
+      towerSlots = [];
+      for (let i = 0; i < TKEYS.length; i++) {
+        towerSlots.push({ x: startX + i*(slotW+slotGap), y: startY, w: slotW, h: slotH, key: TKEYS[i] });
+      }
+    }
+    let btnSendWave = null;
+    let towerSlots = [];
+
+    // === TOWER INFO POPUP ===
+    function drawTowerInfo() {
+      if (!G.selTower) return;
+      const t = G.selTower;
+      const def = TDEFS[t.type];
+      const pw = 180, ph = 140;
+      let px = t.x + 30, py = t.y - ph/2;
+      if (px + pw > W) px = t.x - pw - 30;
+      if (py < 0) py = 4;
+      if (py + ph > UI_Y) py = UI_Y - ph - 4;
+
+      ctx.fillStyle = "rgba(15,20,26,0.92)";
+      ctx.fillRect(px, py, pw, ph);
+      ctx.strokeStyle = "#3a4555"; ctx.lineWidth = 1; ctx.strokeRect(px+0.5,py+0.5,pw-1,ph-1);
+
+      ctx.fillStyle = "#e8eef6"; ctx.font = "bold 13px system-ui"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+      ctx.fillText(def.name + " Lv." + (t.level+1), px+10, py+8);
+      ctx.fillStyle = "#aab6c5"; ctx.font = "12px system-ui";
+      ctx.fillText("DMG: " + Math.round(towerDmg(t)), px+10, py+28);
+      ctx.fillText("Range: " + Math.round(towerRange(t)), px+10, py+44);
+      ctx.fillText("Kills: " + t.kills, px+10, py+60);
+
+      // upgrade button
+      towerInfoBtns = {};
+      if (t.level < 2) {
+        const cost = Math.round(def.cost * UPG_COST[t.level]);
+        const bx = px+8, by = py+80, bw = 78, bh = 26;
+        const aff = G.currency >= cost;
+        const hov = mouse.x>=bx&&mouse.x<=bx+bw&&mouse.y>=by&&mouse.y<=by+bh;
+        ctx.fillStyle = aff ? (hov ? "#2b8cff" : "#1f6feb") : "#444";
+        ctx.fillRect(bx,by,bw,bh);
+        ctx.fillStyle = aff ? "#fff" : "#888"; ctx.font = "bold 11px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("Up " + cost + "\uD83D\uDC1F", bx+bw/2, by+bh/2);
+        towerInfoBtns.upgrade = { x:bx,y:by,w:bw,h:bh };
+      }
+      // sell button
+      const sv = Math.round(t.totalSpent * 0.6);
+      const sbx = px+92, sby = py+80, sbw = 78, sbh = 26;
+      const shov = mouse.x>=sbx&&mouse.x<=sbx+sbw&&mouse.y>=sby&&mouse.y<=sby+sbh;
+      ctx.fillStyle = shov ? "#cc4444" : "#993333";
+      ctx.fillRect(sbx,sby,sbw,sbh);
+      ctx.fillStyle = "#fff"; ctx.font = "bold 11px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("Sell " + sv + "\uD83D\uDC1F", sbx+sbw/2, sby+sbh/2);
+      towerInfoBtns.sell = { x:sbx,y:sby,w:sbw,h:sbh };
+    }
+    let towerInfoBtns = {};
+
+    // === UNLOCK NOTIFICATION ===
+    function drawUnlockNote() {
+      if (!G.unlockNote) return;
+      G.unlockNote.timer -= 1;
+      if (G.unlockNote.timer <= 0) { G.unlockNote = null; return; }
+      const alpha = Math.min(1, G.unlockNote.timer / 30);
+      ctx.save(); ctx.globalAlpha = alpha;
+      ctx.fillStyle = "rgba(30,50,80,0.85)";
+      const bw = 360, bh = 40, bx = (W-bw)/2, by = 50;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = "#ffd700"; ctx.lineWidth = 2; ctx.strokeRect(bx,by,bw,bh);
+      ctx.fillStyle = "#ffd700"; ctx.font = "bold 16px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("\u2605 New Tower: " + TDEFS[G.unlockNote.type].name + "! \u2605", W/2, by+bh/2);
+      ctx.restore();
+    }
+
+    // === OVERLAY SCREENS ===
+    function wrapText(text, cx, y, maxW, lh) {
+      const words = text.split(/\s+/); let line = "", yy = y;
+      ctx.textAlign = "center";
+      for (let i = 0; i < words.length; i++) {
+        const test = line ? line + " " + words[i] : words[i];
+        if (ctx.measureText(test).width > maxW && line) { ctx.fillText(line, cx, yy); line = words[i]; yy += lh; }
+        else line = test;
+      }
+      if (line) ctx.fillText(line, cx, yy);
+    }
+
+    function drawOverlay(title, subtitle, btnLabel) {
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0,0,W,H);
+      const pw = 500, ph = 260, px = (W-pw)/2, py = (H-ph)/2;
+      ctx.fillStyle = "rgba(19,24,30,0.95)"; ctx.fillRect(px,py,pw,ph);
+      ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.strokeRect(px+0.5,py+0.5,pw-1,ph-1);
+      ctx.fillStyle = "#e8eef6"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+      ctx.font = "bold 26px system-ui"; ctx.fillText(title, W/2, py+28);
+      ctx.fillStyle = "#aab6c5"; ctx.font = "15px system-ui";
+      wrapText(subtitle, W/2, py+76, pw-60, 22);
+      // button
+      const bw = 160, bh = 44, bx = (W-bw)/2, by = py+ph-68;
+      const hov = mouse.x>=bx&&mouse.x<=bx+bw&&mouse.y>=by&&mouse.y<=by+bh;
+      ctx.fillStyle = hov ? "#2b8cff" : "#1f6feb";
+      ctx.fillRect(bx,by,bw,bh);
+      ctx.strokeStyle = "rgba(255,255,255,0.25)"; ctx.strokeRect(bx+0.5,by+0.5,bw-1,bh-1);
+      ctx.fillStyle = "#fff"; ctx.font = "bold 16px system-ui"; ctx.textBaseline = "middle";
+      ctx.fillText(btnLabel, bx+bw/2, by+bh/2);
+      ctx.restore();
+      overlayBtn = { x:bx, y:by, w:bw, h:bh };
+      return hov;
+    }
+    let overlayBtn = null;
     // CHUNK5_INSERT
 
   })();
