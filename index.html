@@ -922,6 +922,192 @@
     let overlayBtn = null;
     // CHUNK5_INSERT
 
+    // === INPUT HANDLING ===
+    const mouse = { x: -1, y: -1, down: false, clicked: false, rClicked: false };
+    const keys = new Set();
+    let keyPressed = null;
+
+    canvas.addEventListener("mousemove", (e) => {
+      const r = canvas.getBoundingClientRect();
+      mouse.x = (e.clientX - r.left) * (W / r.width);
+      mouse.y = (e.clientY - r.top) * (H / r.height);
+      if (mouse.y < UI_Y) {
+        G.hoverCell = { col: Math.floor(mouse.x / GS), row: Math.floor(mouse.y / GS) };
+      } else {
+        G.hoverCell = null;
+      }
+    });
+    canvas.addEventListener("mouseleave", () => { mouse.x = -1; mouse.y = -1; G.hoverCell = null; });
+    canvas.addEventListener("mousedown", () => { mouse.down = true; });
+    window.addEventListener("mouseup", () => { if (mouse.down) mouse.clicked = true; mouse.down = false; });
+    canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); mouse.rClicked = true; });
+
+    window.addEventListener("keydown", (e) => {
+      const k = e.key;
+      if (["1","2","3","4","5","6"," ","Escape","Enter"].includes(k)) e.preventDefault();
+      keys.add(k);
+      keyPressed = k;
+    }, { passive: false });
+    window.addEventListener("keyup", (e) => { keys.delete(e.key); });
+
+    function handleInput() {
+      // keyboard tower select
+      if (keyPressed) {
+        const num = parseInt(keyPressed);
+        if (num >= 1 && num <= 6) {
+          const key = TKEYS[num - 1];
+          if (G.unlocked.includes(key) && G.currency >= TDEFS[key].cost) {
+            G.selType = G.selType === key ? null : key;
+            G.selTower = null;
+          }
+        }
+        if (keyPressed === " " || keyPressed === "Enter") {
+          if (G.state === "menu") { G.state = "playing"; getAudioCtx(); }
+          else if (G.state === "victory" || G.state === "gameover") { resetGame(); G.state = "playing"; getAudioCtx(); }
+          else if (G.state === "playing" && G.waveState === "prep") startWave();
+        }
+        if (keyPressed === "Escape") { G.selType = null; G.selTower = null; }
+        keyPressed = null;
+      }
+      // right click cancel
+      if (mouse.rClicked) { G.selType = null; G.selTower = null; mouse.rClicked = false; }
+
+      if (!mouse.clicked) return;
+      mouse.clicked = false;
+
+      // overlay button
+      if ((G.state === "menu" || G.state === "victory" || G.state === "gameover") && overlayBtn) {
+        if (mouse.x >= overlayBtn.x && mouse.x <= overlayBtn.x+overlayBtn.w &&
+            mouse.y >= overlayBtn.y && mouse.y <= overlayBtn.y+overlayBtn.h) {
+          getAudioCtx();
+          if (G.state === "menu") G.state = "playing";
+          else { resetGame(); G.state = "playing"; }
+          return;
+        }
+      }
+      if (G.state !== "playing") return;
+
+      // send wave button
+      if (btnSendWave && G.waveState === "prep") {
+        if (mouse.x >= btnSendWave.x && mouse.x <= btnSendWave.x+btnSendWave.w &&
+            mouse.y >= btnSendWave.y && mouse.y <= btnSendWave.y+btnSendWave.h) {
+          startWave(); return;
+        }
+      }
+
+      // tower info buttons
+      if (G.selTower && towerInfoBtns) {
+        if (towerInfoBtns.upgrade) {
+          const b = towerInfoBtns.upgrade;
+          if (mouse.x>=b.x&&mouse.x<=b.x+b.w&&mouse.y>=b.y&&mouse.y<=b.y+b.h) {
+            if (upgradeTower(G.selTower)) soundUpgrade();
+            return;
+          }
+        }
+        if (towerInfoBtns.sell) {
+          const b = towerInfoBtns.sell;
+          if (mouse.x>=b.x&&mouse.x<=b.x+b.w&&mouse.y>=b.y&&mouse.y<=b.y+b.h) {
+            sellTower(G.selTower); soundSell(); return;
+          }
+        }
+      }
+
+      // tower slot clicks (bottom panel)
+      for (const slot of towerSlots) {
+        if (mouse.x >= slot.x && mouse.x <= slot.x+slot.w && mouse.y >= slot.y && mouse.y <= slot.y+slot.h) {
+          if (G.unlocked.includes(slot.key)) {
+            G.selType = G.selType === slot.key ? null : slot.key;
+            G.selTower = null;
+          }
+          return;
+        }
+      }
+
+      // placement on grid
+      if (G.selType && G.hoverCell) {
+        const {col, row} = G.hoverCell;
+        if (placeTower(G.selType, col, row)) {
+          soundPlace();
+          if (G.currency < TDEFS[G.selType].cost) G.selType = null;
+        }
+        return;
+      }
+
+      // click on placed tower to select it
+      if (mouse.y < UI_Y) {
+        let found = null;
+        for (const t of G.towers) {
+          if (Math.abs(mouse.x - t.x) < GS/2 && Math.abs(mouse.y - t.y) < GS/2) { found = t; break; }
+        }
+        if (found) { G.selTower = G.selTower && G.selTower.id === found.id ? null : found; G.selType = null; }
+        else { G.selTower = null; }
+      }
+    }
+
+    // === MAIN GAME LOOP ===
+    let lastTime = 0;
+
+    function tick(timestamp) {
+      const dt = lastTime ? Math.min((timestamp - lastTime) / (1000 / 60), 3) : 1;
+      lastTime = timestamp;
+
+      // UPDATE
+      handleInput();
+      if (G.state === "playing") {
+        if (G.waveState === "active") {
+          updateSpawner(dt);
+          updateEnemies(dt);
+          updateTowers(dt);
+          updateProjectiles(dt);
+          updateParticles(dt);
+          checkWaveComplete();
+        } else if (G.waveState === "intermission") {
+          G.interTimer -= dt;
+          updateParticles(dt);
+          if (G.interTimer <= 0) {
+            G.waveState = "prep";
+            G.wave++;
+            if (G.wave > 20) { G.state = "victory"; soundVictory(); }
+          }
+        } else {
+          updateParticles(dt);
+        }
+      }
+
+      // DRAW
+      drawMap();
+      drawTowers();
+      drawEnemies();
+      drawProjectiles();
+      drawParticles();
+      if (G.selType) drawPlacementPreview();
+      if (G.state === "playing") {
+        drawHUD();
+        drawUIPanel();
+        drawTowerInfo();
+        drawUnlockNote();
+      }
+
+      // OVERLAYS
+      if (G.state === "menu") {
+        drawOverlay("Cat Tower Defense",
+          "Place cat towers to defend against waves of critters! Click a tower in the panel below, then click on grass to place it. Upgrade and sell towers by clicking them. Survive all 20 waves to win!",
+          "Play");
+      } else if (G.state === "victory") {
+        drawOverlay("Victory!",
+          "You defended the territory through all 20 waves! Total kills: " + G.totalKills + ". Lives remaining: " + G.lives + ". Towers built: " + G.towers.length + ".",
+          "Play Again");
+      } else if (G.state === "gameover") {
+        drawOverlay("Game Over",
+          "The critters broke through! You survived " + (G.wave) + " waves with " + G.totalKills + " total kills.",
+          "Try Again");
+      }
+
+      requestAnimationFrame(tick);
+    }
+
+    requestAnimationFrame(tick);
+
   })();
   </script>
 </body>
